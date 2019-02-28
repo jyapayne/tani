@@ -333,7 +333,7 @@ template runTest(procCall, info, testName) =
         styledEcho(styleBright, fgGreen, okStr,
                    fgWhite, "     ", testName)
       else:
-        echo "$1     $2".format(okStr, t.name)
+        echo "$1     $2".format(okStr, testName)
 
     info.testsPassed += 1
     info.lastTestFailed = false
@@ -352,7 +352,7 @@ template runTest(procCall, info, testName) =
                    fgBlue, "\l[Not run]",
                    fgWhite, " ", testName)
       else:
-        echo "\l[Not run] $1".format(t.name)
+        echo "\l[Not run] $1".format(testName)
 
       let
         name = e.checkFuncName
@@ -391,7 +391,7 @@ template runTest(procCall, info, testName) =
                    fgRed, "\l[Failed]",
                    fgWhite, " ", testName)
       else:
-        echo "\l[Failed] $1".format(t.name)
+        echo "\l[Failed] $1".format(testName)
 
       let
         name = e.checkFuncName
@@ -523,7 +523,7 @@ template createTotalVars(totalTestsPassed, totalTests) =
 template printFinalSummary(totalTestsPassed, totalTests) =
   printSummary(totalTestsPassed, totalTests)
 
-proc expandTests(currentDir: string): NimNode =
+proc expandTests(returnErrorCode: bool, currentDir: string): NimNode =
 
   result = newNimNode(nnkStmtList)
 
@@ -567,6 +567,8 @@ proc expandTests(currentDir: string): NimNode =
     result.add(getAst(createRunTests(allTests, infoSym, totalTests, totalTestsPassed)))
 
   result.add(getAst(printFinalSummary(totalTestsPassed, totalTests)))
+  if returnErrorCode:
+    result.add(quote do: `totalTests` - `totalTestsPassed`)
 
 macro test*(name: string, body: untyped): untyped =
   ## The test macro. No runtime overhead is introduced using it and
@@ -576,8 +578,11 @@ macro test*(name: string, body: untyped): untyped =
     testsInfo = getTestsModule(fileName)
   testsInfo.addTest(body, name)
 
-macro runTests*(callsite: varargs[untyped]): untyped =
+macro runTests*(returnErrorCode=false): untyped =
   ## This macro must be run in the main testing module that imports
-  ## all of the other tests
+  ## all of the other tests.
+  ##
+  ## If returnErrorCode is true, the number of failed tests will
+  ## be returned.
   let currentDir = getProjectPath()
-  return expandTests(currentDir)
+  return expandTests(returnErrorCode.boolVal, currentDir)
