@@ -1,9 +1,9 @@
 import macros
-import tables, strutils, os
+import tables, strutils, os, typetraits
 
-export tables, strutils, os
+export tables, strutils, os, typetraits
 
-when defined(ECMAScript):
+when defined(js):
   const noColors = true
 else:
   const noColors = defined(noColors)
@@ -11,6 +11,8 @@ else:
   export terminal
 
 import private/utils
+when not defined(js):
+  import private/captureoutput
 
 type
   Test = ref object
@@ -39,11 +41,11 @@ type
     checkFuncName: string
     valTable: Table[string, string]
 
-  PrivateTestError = object of TestAssertError
-    ## Raised when a test tries to access something
-    ## that is private to a module
-
 var testsModuleMap {.compileTime.} = newTable[string, TestsModule]()
+
+var
+  totalTestsPassed = 0
+  totalTests = 0
 
 proc `==`*[T](ar: openarray[T], ar2: openarray[T]): bool =
   ## helper proc to compare arrays
@@ -54,7 +56,7 @@ proc `==`*[T](ar: openarray[T], ar2: openarray[T]): bool =
       return false
   return true
 
-template returnException(name, testName, snip, vals, pos, posRel) =
+template returnException(name, tname, snip, vals, pos, posRel) =
   ## private template for raising an exception
   var
     filename = posRel.filename
@@ -76,7 +78,7 @@ template returnException(name, testName, snip, vals, pos, posRel) =
   exc.lineNumber = line
   exc.column = col
   exc.codeSnip = snip
-  exc.testName = testName
+  exc.testName = tname
   exc.valTable = vals
   exc.checkFuncName = name
   raise exc
@@ -93,7 +95,7 @@ proc `$`*[T](ar: openarray[T]): string =
         result &= ", " & $ar[i]
     result &= "]"
 
-proc typeToStr*[T](some:typedesc[T]): string = name(T)
+proc typeToStr*[T](some: typedesc[T]): string = name(T)
 
 template tupleObjToStr(obj): string {.dirty.} =
   var res = typeToStr(type(obj))
@@ -127,6 +129,9 @@ proc `$`*(s: ref object): string =
 proc objToStr*[T: object](obj: var T): string =
   tupleObjToStr(obj)
 
+proc objToStr*[T: object](obj: T): string =
+  tupleObjToStr(obj)
+
 proc objToStr*[T: tuple](obj: T): string =
   result = "tuple " & tupleObjToStr(obj)
 
@@ -141,7 +146,7 @@ macro toString*(obj: typed): untyped =
   case kind:
     of ntyTuple, ntyObject:
       template toStrAst(obj): string =
-        einheit.objToStr(obj)
+        tani.objToStr(obj)
       result = getAst(toStrAst(obj))
     of ntyString:
       template toStrAst(obj): string =
@@ -179,7 +184,7 @@ template recursive(node, action): untyped {.dirty.} =
       result.add helper(c)
   discard helper(node)
 
-macro getSyms(code:untyped): untyped =
+macro getSyms(code: untyped): untyped =
   ## This macro gets all symbols and values of an expression
   ## into a table
   ##
@@ -220,62 +225,52 @@ macro getSyms(code:untyped): untyped =
       initTable[string, string]()
     result = getAst(emptyTable())
 
-template check*(code: untyped) =
-  ## Assertions for tests
-  if not code:
-    let
-      pos = instantiationInfo(fullpaths=true)
-      posRel = instantiationInfo()
-      vals = getSyms(code)
-      # get ast string with extra spaces ignored
-      snip = astToStr(code).strip().split({'\t', '\v', '\c', '\n', '\f'}).join("; ")
-
-    returnException("check", testName, snip, vals, pos, posRel)
 
 template wrapCode(code): untyped =
   # This is needed to prevent an "unreachable code" error
   # if the code block raises an exception
   (proc () = code)()
 
-template checkRaises*(error: untyped, code: untyped): untyped =
-  ## Raises a TestAssertError when the exception "error" is
-  ## not thrown in the code
-  let
-    pos = instantiationInfo(fullpaths=true)
-    posRel = instantiationInfo()
-
-  try:
-    wrapCode(code)
+template genCheckRaises(tname) =
+  template checkRaises(error: typed, code: typed): untyped {.used.}=
+    ## Raises a TestAssertError when the exception "error" is
+    ## not thrown in the code
     let
-      codeStr = astToStr(code).strip().split().join(" ")
-      snip = "$1, $2".format(astToStr(error), codeStr)
-      vals = {codeStr: "No Exception Raised"}.toTable()
-      testName = testName
-    returnException("checkRaises", testName, snip, vals, pos, posRel)
+      pos = instantiationInfo(fullpaths=true)
+      posRel = instantiationInfo()
 
-  except error:
-    discard
-  except TestAssertError:
-    raise
-  except:
-    let
-      e = getCurrentException()
-      codeStr = astToStr(code).strip().split().join(" ")
-      snip = "$1, $2".format(astToStr(error), codeStr)
-      vals = {codeStr: $e.name}.toTable()
-      testName = testName
+    try:
+      wrapCode(code)
+      let
+        codeStr = astToStr(code).strip().split().join(" ")
+        snip = "$1, $2".format(astToStr(error), codeStr)
+        vals = {codeStr: "No Exception Raised"}.toTable()
+      returnException("checkRaises", tname, snip, vals, pos, posRel)
 
-    returnException("checkRaises", testName, snip, vals, pos, posRel)
+    except error:
+      discard
+    except TestAssertError:
+      raise
+    except:
+      let
+        e = getCurrentException()
+        codeStr = astToStr(code).strip().split().join(" ")
+        snip = "$1, $2".format(astToStr(error), codeStr)
+        vals = {codeStr: $e.name}.toTable()
 
+      returnException("checkRaises", tname, snip, vals, pos, posRel)
 
-proc printRunning*(testsInfo: TestsInfo) =
+proc getTicks(): string {.used.}=
   let termSize = getTermSize()
+
   var
     numTicks = termSize.width
-    ticks = ""
 
   for i in 0..<numTicks:
-    ticks &= "-"
+    result &= "-"
+
+proc printRunning*(testsInfo: TestsInfo) =
+  let ticks = getTicks()
 
   when not defined(quiet):
     when not noColors:
@@ -283,7 +278,7 @@ proc printRunning*(testsInfo: TestsInfo) =
         styleBright,
         fgYellow, "\l" & ticks,
         fgYellow, "\l\l[Running]",
-        fgWhite, " tests in $1 ".format(testsInfo.fileName)
+        fgWhite, " tests in ", fgBlue, testsInfo.fileName
       )
     else:
       echo "\l$1\l".format(ticks)
@@ -301,131 +296,129 @@ proc printPassedTests*(info: TestsInfo) =
     if info.testsPassed != info.numTests:
       color = fgRed
 
-  var passedStr = "[" & $info.testsPassed & "/" & $info.numTests & "]"
+  var passedStr {.used.} = "[" & $info.testsPassed & "/" & $info.numTests & "]"
 
   when not defined(quiet):
     when not noColors:
       styledEcho(
         styleBright, color, "\l", passedStr,
-        fgWhite, " tests passed for ", info.fileName, "."
+        fgWhite, " tests passed for ", fgBlue, info.fileName
       )
     else:
       echo "\l$1 tests passed for $2.".format(passedStr, info.fileName)
 
+template printTestProgress(info, testName) =
+  when defined(quiet):
+    when noColors:
+      stdout.write(".")
+    else:
+      setForegroundColor(fgGreen)
+      writeStyled(".", {styleBright})
+      setForegroundColor(fgWhite)
+  else:
+    var okStr = "[OK]"
+    if info.lastTestFailed:
+      okStr = "\l" & okStr
+
+    when not noColors:
+      styledEcho(styleBright, fgGreen, okStr,
+                 fgWhite, "     ", testName)
+    else:
+      echo "$1     $2".format(okStr, testName)
+
+template printTestFailed(info, testName, e) =
+  when defined(quiet):
+    when noColors:
+      stdout.write("F")
+    else:
+      setForegroundColor(fgRed)
+      writeStyled("F", {styleBright})
+      setForegroundColor(fgWhite)
+  else:
+    when not noColors:
+      styledEcho(styleBright,
+                 fgRed, "\l[Failed]",
+                 fgWhite, " ", testName)
+    else:
+      echo "\l[Failed] $1".format(testName)
+
+    let
+      name = e.checkFuncName
+      snip = e.codeSnip
+      line = e.lineNumber
+      col = e.column
+      filename = e.fileName
+      vals = e.valTable
+
+    when not noColors:
+      styledEcho(styleDim, fgWhite, "  Condition: $2($1)".format(snip, name))
+
+      if vals.len > 0:
+        styledEcho(styleDim, fgWhite, "  Where:")
+        for k, v in vals.pairs:
+          styledEcho(styleDim, fgCyan, "    ", k,
+                     fgWhite, " -> ",
+                     fgGreen, v)
+      styledEcho(
+        styleDim, fgWhite,
+        "  Location: $1; line $2; col $3".format(filename, line, col))
+    else:
+      echo "  Condition: $2($1)".format(snip, name)
+      if vals.len > 0:
+        echo "  Where:"
+        for k, v in vals.pairs:
+          echo "    ", k, " -> ", v
+
+      echo "  Location: $1; line $2; col: $3".format(filename, line, col)
+
+
+template printTestOutput(info, testName, output) =
+  when not defined(quiet):
+    if output.len > 0:
+      let ticks = getTicks()
+      when noColors:
+        echo "\l" & ticks
+        echo "\l[Captured output for test \"$1\"]\l".format(testName)
+        echo "  " & output.strip().replace("\l", "\l  ")
+        echo "\l$1\l".format(ticks)
+      else:
+        styledEcho(styleDim,
+                   fgBlue, "\l$1\l".format(ticks),
+                   fgBlue, "\l[Captured output for test \"$1\"]".format(testName))
+
+        styledEcho(styleDim,
+                   fgWhite, "\l  " & output.strip().replace("\l", "\l  "))
+
+        styledEcho(styleDim,
+                   fgBlue, "\l$1\l".format(ticks))
+
 
 template runTest(procCall, info, testName) =
 
+  var output = ""
   try:
-    procCall
-    when defined(quiet):
-      when noColors:
-        stdout.write(".")
-      else:
-        setForegroundColor(fgGreen)
-        writeStyled(".", {styleBright})
-        setForegroundColor(fgWhite)
-    else:
-      var okStr = "[OK]"
-      if info.lastTestFailed:
-        okStr = "\l" & okStr
+    when not defined(js):
+      let (testOut, exc) = captureOutput(procCall)
+      output = testOut
 
-      when not noColors:
-        styledEcho(styleBright, fgGreen, okStr,
-                   fgWhite, "     ", testName)
-      else:
-        echo "$1     $2".format(okStr, testName)
+      if not exc.isNil:
+        raise exc
+    else:
+      procCall
+
+    printTestProgress(info, testName)
+    printTestOutput(info, testName, output)
 
     info.testsPassed += 1
     info.lastTestFailed = false
-  except PrivateTestError as e:
-    info.numTests -= 1
-    when defined(quiet):
-      when noColors:
-        stdout.write("N")
-      else:
-        setForegroundColor(fgBlue)
-        writeStyled("N", {styleBright})
-        setForegroundColor(fgWhite)
-    else:
-      when not noColors:
-        styledEcho(styleBright,
-                   fgBlue, "\l[Not run]",
-                   fgWhite, " ", testName)
-      else:
-        echo "\l[Not run] $1".format(testName)
-
-      let
-        name = e.checkFuncName
-        snip = e.codeSnip
-        line = e.lineNumber
-        col = e.column
-        filename = e.fileName
-        vals = e.valTable
-
-      when not noColors:
-        styledEcho(styleDim, fgWhite,
-          "  Test code contains private or non accessible symbols:")
-
-        styledEcho(styleDim, fgGreen, "    " & snip)
-
-        styledEcho(
-          styleDim, fgWhite,
-          "  Location: $1; line $2; col $3".format(filename, line, col))
-      else:
-        echo "  Test code contains private or non accessible symbols:\l    $1".format(snip)
-        echo "  Location: $1; line $2; col: $3".format(filename, line, col)
-
-    info.lastTestFailed = true
 
   except TestAssertError as e:
-    when defined(quiet):
-      when noColors:
-        stdout.write("F")
-      else:
-        setForegroundColor(fgRed)
-        writeStyled("F", {styleBright})
-        setForegroundColor(fgWhite)
-    else:
-      when not noColors:
-        styledEcho(styleBright,
-                   fgRed, "\l[Failed]",
-                   fgWhite, " ", testName)
-      else:
-        echo "\l[Failed] $1".format(testName)
-
-      let
-        name = e.checkFuncName
-        snip = e.codeSnip
-        line = e.lineNumber
-        col = e.column
-        filename = e.fileName
-        vals = e.valTable
-
-      when not noColors:
-        styledEcho(styleDim, fgWhite, "  Condition: $2($1)".format(snip, name))
-
-        if vals.len > 0:
-          styledEcho(styleDim, fgWhite, "  Where:")
-          for k, v in vals.pairs:
-            styledEcho(styleDim, fgCyan, "    ", k,
-                       fgWhite, " -> ",
-                       fgGreen, v)
-        styledEcho(
-          styleDim, fgWhite,
-          "  Location: $1; line $2; col $3".format(filename, line, col))
-      else:
-        echo "  Condition: $2($1)".format(snip, name)
-        if vals.len > 0:
-          echo "  Where:"
-          for k, v in vals.pairs:
-            echo "    ", k, " -> ", v
-
-        echo "  Location: $1; line $2; col: $3".format(filename, line, col)
-
+    printTestFailed(info, testName, e)
+    printTestOutput(info, testName, output)
     info.lastTestFailed = true
 
 
-proc printSummary(totalTestsPassed: int, totalTests: int) =
+proc printSummary*() =
   when not noColors:
     var summaryColor = fgGreen
 
@@ -443,14 +436,7 @@ proc printSummary(totalTestsPassed: int, totalTests: int) =
       echo "\l\l$1 tests passed.".format(passedStr)
   else:
 
-    let termSize = getTermSize()
-
-    var
-      ticks = ""
-      numTicks = termSize.width
-
-    for i in 0..<numTicks:
-      ticks &= "-"
+    let ticks = getTicks()
 
     when not noColors:
       styledEcho(styleBright,
@@ -477,98 +463,80 @@ template createRunTests(tests, testsInfo, totalTests, totalTestsPassed) =
       writeStyled(testsInfo.fileName & " ", {styleBright})
 
   tests
+
   testsInfo.printPassedTests()
 
   totalTests += testsInfo.numTests
   totalTestsPassed += testsInfo.testsPassed
 
 template makeProc(body, tnameSym, tName, lineInfo, currentDir) =
-  when not compiles((proc (tnameSym: string) = body)(tName)):
-    (proc (tnameSym: string) =
-      let
-        #vals = getSyms(body)
-        # get ast string with extra spaces ignored
-        astBody = astToStr(body).strip().split({'\t', '\v', '\c', '\n', '\f'})
-        snip = astBody[1..<astBody.len].join("\l    ")
-
-      var
-        filename = lineInfo.fileName.relativePath(currentDir)
-        line = lineInfo.line
-        col = lineInfo.column
-
-      var message = "\lCode contains private or non accessible symbols."
-      message &= "  Location: $1; line $2; col: $3".format(filename, line, col)
-
-      var exc = newException(PrivateTestError, message)
-      exc.fileName = filename
-      exc.lineNumber = line
-      exc.column = col
-      exc.codeSnip = snip
-      exc.testName = tName
-      #exc.valTable = vals
-      exc.checkFuncName = tnameSym
-      raise exc
-    )(tName)
-  else:
-    (proc (tnameSym: string) = body)(tName)
+  (proc (tnameSym: string) = body)(tName)
 
 template createInfo(infoSym, name, ntests, currentDir) =
-  let infoSym = TestsInfo(fileName: name.relativePath(currentDir), numTests: ntests)
+  let infoSym = TestsInfo(
+    fileName: name.relativePath(currentDir),
+    numTests: ntests
+  )
 
-template createTotalVars(totalTestsPassed, totalTests) =
-  var
-    totalTests = 0
-    totalTestsPassed = 0
+template genCheck(tname) =
+  template check(code: untyped) {.used.}=
+    ## Assertions for tests
+    if not code:
+      let
+        pos = instantiationInfo(fullpaths=true)
+        posRel = instantiationInfo()
+        vals = getSyms(code)
+        # get ast string with extra spaces ignored
+        snip = astToStr(code).strip().split({'\t', '\v', '\c', '\n', '\f'}).join("; ")
 
-template printFinalSummary(totalTestsPassed, totalTests) =
-  printSummary(totalTestsPassed, totalTests)
+      returnException("check", tname, snip, vals, pos, posRel)
 
-proc expandTests(returnErrorCode: bool, currentDir: string): NimNode =
+proc expandTests(currentDir, currentFile: string): NimNode {.used.} =
 
   result = newNimNode(nnkStmtList)
 
   let
-    totalTestsPassed = genSym(nskVar, "totalPassed")
-    totalTests = genSym(nskVar, "totalTests")
+    totalTestsPassed = bindSym("totalTestsPassed")
+    totalTests = bindSym("totalTests")
 
-  result.add(getAst(createTotalVars(totalTestsPassed, totalTests)))
+  let name = currentFile
+  let
+    testsModule = testsModuleMap[name]
+    infoSym = genSym(nskLet, "testsInfo")
+    allTests = newNimNode(nnkStmtList)
+    numTests = newLit(testsModule.tests.len())
 
-  for name in testsModuleMap.keys():
+  result.add(getAst(createInfo(infoSym, name, numTests, currentDir)))
+
+  for test in testsModule.tests:
     let
-      testsModule = testsModuleMap[name]
-      infoSym = genSym(nskLet, "testsInfo")
-      allTests = newNimNode(nnkStmtList)
-      numTests = newLit(testsModule.tests.len())
+      body = test.procDef
+      tname = genSym(nskParam, "tname")
 
-    result.add(getAst(createInfo(infoSym, name, numTests, currentDir)))
+    body.insert(0,
+      getAst(genCheckRaises(tname))
+    )
+    body.insert(0,
+      getAst(genCheck(tname))
+    )
 
-    for test in testsModule.tests:
-      let
-        body = test.procDef
-        tname = genSym(nskParam, "tname")
+    let
+      lineInfo = body.lineInfoObj
+      testCall = getAst(makeProc(body, tname, test.name, lineInfo, currentDir))
+      testRun = getAst(runTest(testCall, infoSym, test.name))
 
-      body.insert(0,
-        nnkLetSection.newTree(
-          nnkIdentDefs.newTree(
-            ident("testName"),
-            newEmptyNode(),
-            tname
-          )
-        )
-      )
+    allTests.add(testRun)
 
-      let
-        lineInfo = body.lineInfoObj
-        testCall = getAst(makeProc(body, tname, test.name, lineInfo, currentDir))
-        testRun = getAst(runTest(testCall, infoSym, test.name))
+  result.add(getAst(createRunTests(allTests, infoSym, totalTests, totalTestsPassed)))
 
-      allTests.add(testRun)
+  result = quote do:
+    (proc () = `result`)()
 
-    result.add(getAst(createRunTests(allTests, infoSym, totalTests, totalTestsPassed)))
+proc getResult*(): int =
+  return totalTests - totalTestsPassed
 
-  result.add(getAst(printFinalSummary(totalTestsPassed, totalTests)))
-  if returnErrorCode:
-    result.add(quote do: `totalTests` - `totalTestsPassed`)
+macro fixture*(procDef: untyped): untyped =
+  return procDef
 
 macro test*(name: string, body: untyped): untyped =
   ## The test macro. No runtime overhead is introduced using it and
@@ -578,11 +546,34 @@ macro test*(name: string, body: untyped): untyped =
     testsInfo = getTestsModule(fileName)
   testsInfo.addTest(body, name)
 
-macro runTests*(returnErrorCode=false): untyped =
-  ## This macro must be run in the main testing module that imports
-  ## all of the other tests.
+macro runTests*(site: varargs[untyped]): untyped =
+  ## This macro needs to be put in all modules that have tests.
   ##
-  ## If returnErrorCode is true, the number of failed tests will
-  ## be returned.
-  let currentDir = getProjectPath()
-  return expandTests(returnErrorCode.boolVal, currentDir)
+  ## Tests will be run when the symbol ``test`` is defined to the compiler (-d: test)
+  when defined(test):
+    let
+      currentDir = getProjectPath()
+      currentFile = site.lineInfoObj.fileName
+    return expandTests(currentDir, currentFile)
+
+macro runTestsMain*(site: varargs[untyped]): untyped =
+  ## This macro must be run in the main testing module that imports
+  ## all of the other test modules.
+  ##
+  ## After this is run, quitting with an error code of ``totalTests - totalPassedTests``
+  ## is the default behavior. To change this, define ``noErrorCode`` in the compiler
+  ## options and manage the error code yourself with ``getResult()``. This only executes
+  ## when the ``test`` symbol is defined.
+  when defined(test):
+    let
+      currentDir = getProjectPath()
+      currentFile = site.lineInfoObj.fileName
+      expTests = expandTests(currentDir, currentFile)
+
+    template runAll(expTests) =
+      expTests
+      printSummary()
+      when not defined(noErrorCode):
+        quit(getResult())
+
+    return getAst(runAll(expTests))
