@@ -1,5 +1,5 @@
 import macros
-import tables, strutils, os, typetraits
+import tables, strutils, os, typetraits, strformat
 
 export tables, strutils, os, typetraits
 
@@ -500,6 +500,11 @@ proc expandTests(currentDir, currentFile: string): NimNode {.used.} =
     totalTests = bindSym("totalTests")
 
   let name = currentFile
+
+  # if there are not tests in a module, ignore it
+  if not testsModuleMap.hasKey(name):
+    return newEmptyNode()
+
   let
     testsModule = testsModuleMap[name]
     infoSym = genSym(nskLet, "testsInfo")
@@ -507,6 +512,9 @@ proc expandTests(currentDir, currentFile: string): NimNode {.used.} =
     numTests = newLit(testsModule.tests.len())
 
   result.add(getAst(createInfo(infoSym, name, numTests, currentDir)))
+
+  when defined(debug):
+    echo fmt"Found tests in {name}"
 
   for test in testsModule.tests:
     let
@@ -556,9 +564,23 @@ macro runTests*(site: varargs[untyped]): untyped =
       currentFile = site.lineInfoObj.fileName.string
     return expandTests(currentDir, currentFile)
 
-macro runTestsMain*(site: varargs[untyped]): untyped =
-  ## This macro must be run in the main testing module that imports
-  ## all of the other test modules.
+macro runTestsMain(cd, cf: string): untyped =
+  let
+    currentDir = cd.strVal
+    currentFile = cf.strVal
+    expTests = expandTests(currentDir, currentFile)
+
+  template runAll(expTests) =
+    expTests
+    printSummary()
+    echo ""
+    when not defined(noErrorCode):
+      quit(getResult())
+
+  return getAst(runAll(expTests))
+
+macro discoverAndRunTests*(site: varargs[untyped]): untyped =
+  ## This macro must be run in a file that is in the directory containing all the tests
   ##
   ## After this is run, quitting with an error code of ``totalTests - totalPassedTests``
   ## is the default behavior. To change this, define ``noErrorCode`` in the compiler
@@ -568,12 +590,16 @@ macro runTestsMain*(site: varargs[untyped]): untyped =
     let
       currentDir = getProjectPath()
       currentFile = site.lineInfoObj.fileName.string
-      expTests = expandTests(currentDir, currentFile)
 
-    template runAll(expTests) =
-      expTests
-      printSummary()
-      when not defined(noErrorCode):
-        quit(getResult())
+    let stmtList = newNimNode(nnkStmtList)
 
-    return getAst(runAll(expTests))
+    for fname in os.walkDirRec(currentDir, relative=true):
+      if fname.splitFile().name.startsWith("test") and fname.splitFile().ext == ".nim":
+        if (currentDir / fname) != currentFile:
+          let moduleName = newLit(currentDir / fname.replace(".nim", ""))
+          let shortName = ident(fname.splitFile.name)
+          # Add the export here to avoid the complaining about unused imports
+          stmtList.add(quote do: import `moduleName`; export `shortName`)
+
+    stmtList.add(quote do: runTestsMain(`currentDir`, `currentFile`))
+    result = stmtList

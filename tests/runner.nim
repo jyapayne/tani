@@ -1,0 +1,3 @@
+import tani
+
+discoverAndRunTests()

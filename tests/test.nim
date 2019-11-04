@@ -1,4 +1,4 @@
-import tani, test2
+import tani
 import terminal
 import os
 
@@ -20,4 +20,4 @@ proc y(): int =
 
   return 10
 
-runTestsMain()
+runTests()
