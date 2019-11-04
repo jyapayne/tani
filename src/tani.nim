@@ -244,7 +244,7 @@ template genCheckRaises(tname) =
       let
         codeStr = astToStr(code).strip().split().join(" ")
         snip = "$1, $2".format(astToStr(error), codeStr)
-        vals = {codeStr: "No Exception Raised"}.toTable()
+        vals = [(codeStr, "No Exception Raised")].toTable()
       returnException("checkRaises", tname, snip, vals, pos, posRel)
 
     except error:
@@ -256,7 +256,7 @@ template genCheckRaises(tname) =
         e = getCurrentException()
         codeStr = astToStr(code).strip().split().join(" ")
         snip = "$1, $2".format(astToStr(error), codeStr)
-        vals = {codeStr: $e.name}.toTable()
+        vals = [(codeStr, $e.name)].toTable()
 
       returnException("checkRaises", tname, snip, vals, pos, posRel)
 
@@ -553,7 +553,7 @@ macro runTests*(site: varargs[untyped]): untyped =
   when defined(test):
     let
       currentDir = getProjectPath()
-      currentFile = site.lineInfoObj.fileName
+      currentFile = site.lineInfoObj.fileName.string
     return expandTests(currentDir, currentFile)
 
 macro runTestsMain*(site: varargs[untyped]): untyped =
@@ -567,7 +567,7 @@ macro runTestsMain*(site: varargs[untyped]): untyped =
   when defined(test):
     let
       currentDir = getProjectPath()
-      currentFile = site.lineInfoObj.fileName
+      currentFile = site.lineInfoObj.fileName.string
       expTests = expandTests(currentDir, currentFile)
 
     template runAll(expTests) =
