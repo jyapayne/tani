@@ -1,4 +1,4 @@
-import macros
+import macros, regex
 import tables, strutils, os, typetraits, strformat
 
 export tables, strutils, os, typetraits
@@ -564,7 +564,7 @@ macro runTests*(site: varargs[untyped]): untyped =
       currentFile = site.lineInfoObj.fileName.string
     return expandTests(currentDir, currentFile)
 
-macro runTestsMain(cd, cf: string): untyped =
+macro runTestsMain(cd, cf: string): untyped {.used.} =
   let
     currentDir = cd.strVal
     currentFile = cf.strVal
@@ -578,6 +578,17 @@ macro runTestsMain(cd, cf: string): untyped =
       quit(getResult())
 
   return getAst(runAll(expTests))
+
+# Exported so that it appears in docs
+const testFilePattern*{.strdefine.}: string = "" ## \
+  ## This is a regex pattern specified as a compiler flag that controls
+  ## which files will be searched for tests. For example,
+  ##
+  ## ```
+  ## nim c -d:testFilePattern="^test.*" tests/runner.nim
+  ## ```
+  ##
+  ## Will only run tests from files that begin with "test"
 
 macro discoverAndRunTests*(site: varargs[untyped]): untyped =
   ## This macro must be run in a file that is in the directory containing all the tests
@@ -594,7 +605,15 @@ macro discoverAndRunTests*(site: varargs[untyped]): untyped =
     let stmtList = newNimNode(nnkStmtList)
 
     for fname in os.walkDirRec(currentDir, relative=true):
-      if fname.splitFile().name.startsWith("test") and fname.splitFile().ext == ".nim":
+      var match: RegexMatch
+      let
+        pattern = re(testFilePattern)
+        validFile = testFilePattern.len == 0 or
+                    regex.match(fname.splitFile().name, pattern, match)
+
+      if validFile and fname.splitFile().ext == ".nim":
+
+        # don't import the current file
         if (currentDir / fname) != currentFile:
           let moduleName = newLit(currentDir / fname.replace(".nim", ""))
           let shortName = ident(fname.splitFile.name)
