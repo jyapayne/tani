@@ -4,9 +4,29 @@ A light Nim testing framework
 
 ## Usage
 
-Simply sprinkle the `test` macro anywhere in your code and call the `runTests` macro once from the main module to run all tests. Tests that are in private procs (outside of the main module) will be skipped due to how the macros are implemented.
+For a directory structure like:
+
+```
+tests/
+  runner.nim
+  testThings.nim
+```
+
+Simply sprinkle the `test` macro anywhere in your code and call the `runTests` macro once at the end of the module to run all tests collected in that module. You must also defined a `runner` module in the root directory that simply has the following code in it:
 
 ```nim
+# runner.nim
+import tani
+
+discoverAndRunTests()
+```
+
+Compile the above with `nim c -d:test -r runner.nim`, and it will automatically find all modules in the same directory and subdirectories and run them if the modules (file names) begin with `test`.
+
+Contents of `testThings.nim`:
+
+```nim
+# testThings.nim
 import tani
 
 proc doSomething(): string =
@@ -16,61 +36,5 @@ proc doSomething(): string =
 
   return "the value"
 
-when defined(test):
-  runTests()
-```
-
-## Limitations
-
-Due to implementation details, the test macro cannot run tests contained within private procs from a different module. For example, when `nim c -r test2.nim` is called on the below files, `privateProc` will not run, but `privateProc2` will. `privateProc` will not be counted towards the final tests run and the tests will pass. Tani is smart enough to detect what the not run tests are and will show you a warning when they do not run.
-
-```nim
-# test1.nim
-
-import tani
-
-proc privateProc(): int =
-  test "test private":
-    check privateProc() == 3
-
-  # Do something here
-
-  return 3
-```
-
-```nim
-# test2.nim
-import tani
-import test1
-
-proc privateProc2(): int =
-  test "test private2":
-    check privateProc2() == 6
-
-  # Do something here
-
-  return 6
-
 runTests()
-```
-
-Output (`nim c -r test2.nim`):
-
-```
-[Running] tests in test1.nim
-
-[Not run] test private
-  Test code contains private or non accessible symbols:
-    check privateProc() == 3
-  Location: test1.nim; line 7; col: 4
-
-
-[Running] tests in test2.nim
-[OK]     test private2
-
-[1/1] tests passed for test2.nim.
-
-[Summary]
-
-  [1/1] tests passed.
 ```
