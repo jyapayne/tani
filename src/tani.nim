@@ -511,7 +511,7 @@ proc expandTests(currentDir, currentFile: string): NimNode {.used.} =
     allTests = newNimNode(nnkStmtList)
     numTests = newLit(testsModule.tests.len())
 
-  result.add(getAst(createInfo(infoSym, name, numTests, currentDir)))
+  result.add(getAst(createInfo(infoSym, newLit(name), numTests, newLit(currentDir))))
 
   when defined(debug):
     echo fmt"Found tests in {name}"
